@@ -1,55 +1,68 @@
-from tcp_game.core.packet import Packet
-
+from .packet import Packet
 
 class PacketValidator:
     """
-    Bu sınıf gelen paketlerin mantıklı olup olmadığını kontrol eder.
+    Gelen paketlerin mantıklı olup olmadığını kontrol eder.
     Temel kontroller:
-        - seq artışı mantıklı mı
-        - ack mantıklı mı
-        - rwnd değerleri tutarlı mı
-        - length pozitif mi
-        - önceki paket bilgisi ile uyumlu mu
+        - length negatif olamaz
+        - rwnd negatif olamaz
+        - length > rwnd olamaz (flow control)
+        - ack geri gidemez
+        - seq sadece o tarafın kendi gönderim sırasına göre kontrol edilir
     """
 
     def __init__(self):
-        # Son alınan paket bilgilerini saklayacağız
-        self.last_seq = None
+        # A'nın seq hattı
+        self.last_A_seq = None
+        self.last_A_len = None
+
+        # B'nin seq hattı
+        self.last_B_seq = None
+        self.last_B_len = None
+
+        # Genel ACK kontrolü
         self.last_ack = None
-        self.last_rwnd = None
 
     def validate(self, packet: Packet):
-        """
-        Paket mantıklıysa True, mantıksızsa False döndürür.
-        """
 
-        # 1) Length negatif olamaz
+        # 1 — Length negatif olamaz
         if packet.length < 0:
             return False, "Length negatif olamaz"
 
-        # 2) rwnd negatif olamaz
+        # 2 — rwnd negatif olamaz
         if packet.rwnd < 0:
             return False, "rwnd negatif olamaz"
 
-        # 3) Eğer daha önce paket aldıysak sıra kontrolü yap
-        if self.last_seq is not None:
-            # seq artışı mantıklı mı?
-            # Örn: eski seq = 10, length = 20 → yeni seq >= 30 olmalı
-            expected_seq = self.last_seq + self.last_length
+        # 3 — Flow control
+        if packet.length > packet.rwnd:
+            return False, "length rwnd’den büyük olamaz (flow control ihlali)"
 
-            if packet.seq < expected_seq:
-                return False, f"seq geri gitmiş: beklenen {expected_seq}, gelen {packet.seq}"
+        # 4 — ACK geri gidemez
+        if self.last_ack is not None and packet.ack < self.last_ack:
+            return False, "ACK geri gidemez"
 
-        # 4) ack mantıklı mı? (Çok basit bir kontrol)
-        if packet.ack < 0:
-            return False, "ACK negatif olamaz"
-
-        # --- Buraya kadar paket mantıklı kabul edilir ---
-
-        # Önceki değerleri güncelle
-        self.last_seq = packet.seq
+        # ACK güncelle
         self.last_ack = packet.ack
-        self.last_rwnd = packet.rwnd
-        self.last_length = packet.length
+
+        # 5 — SEQ kontrolü AYRI AYRI
+
+        # A → B paketi mi? (ACK > 0 AND RWND > 0 AND length > 0?)
+        if packet.ack == 0:   # Bu paketi gönderen B'dir
+            if self.last_B_seq is not None:
+                expected = self.last_B_seq + self.last_B_len
+                if packet.seq != expected:
+                    return False, f"B seq bozuk: beklenen {expected}, gelen {packet.seq}"
+
+            self.last_B_seq = packet.seq
+            self.last_B_len = packet.length
+
+        else:  # Bu paketi gönderen A'dır
+            if self.last_A_seq is not None:
+                expected = self.last_A_seq + self.last_A_len
+                if packet.seq != expected:
+                    return False, f"A seq bozuk: beklenen {expected}, gelen {packet.seq}"
+
+            self.last_A_seq = packet.seq
+            self.last_A_len = packet.length
 
         return True, "OK"
