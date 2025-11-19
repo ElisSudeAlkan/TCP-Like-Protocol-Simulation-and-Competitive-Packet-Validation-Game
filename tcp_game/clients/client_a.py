@@ -1,16 +1,23 @@
 import socket
+import json
 from tcp_game.core.packet import Packet
 from tcp_game.core.validator import PacketValidator
+from tcp_game.core.game_logic import GameManager
 
 HOST = "127.0.0.1"
 PORT = 5000
 
 validator = PacketValidator()
+gm = GameManager()
 
-RWND_START = 100
-RWND_INC_EVERY = 4
-RWND_INC_AMOUNT = 50
-RWND_MAX = 1000
+def safe_recv(conn):
+    try:
+        raw = conn.recv(1024)
+        if not raw:
+            return None
+        return raw.decode().strip()
+    except:
+        return None
 
 
 def start_listener():
@@ -18,90 +25,143 @@ def start_listener():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind((HOST, PORT))
     s.listen(1)
-
-    print("[A] Dinleniyor…")
+    print("[A] Bekliyor...")
     conn, addr = s.accept()
-    print(f"[A] Bağlantı kuruldu: {addr}\n")
+    print("[A] Bağlandı:", addr)
 
-    seq_a = 1
-    ack_a = 0
+    seq = 1
+    ack = 0
+    rwnd = 100
 
-    rwnd_a = RWND_START
     recv_count = 0
-
     my_turn = True
 
-    while True:
+    while not gm.is_game_over():
 
-        # -------------------- A veri gönderiyor --------------------
+        loser = gm.check_timeout()
+        if loser:
+            print(f"⏳ TIMEOUT: {loser} -1")
+            gm.switch_turn()
+
+        # ---------------------------------------
+        # A → B GÖNDERİYOR
+        # ---------------------------------------
         if my_turn:
 
-            length = int(input("[A] Gönderilecek veri LEN: "))
+            length = int(input("[A] Length: "))
+            pkt = Packet(seq=seq, ack=ack, rwnd=rwnd, length=length)
 
-            pkt = Packet(seq=seq_a, ack=ack_a, rwnd=rwnd_a, length=length)
+            ok, _ = validator.validate(pkt, sender="A")
+            if not ok:
+                gm.pending_invalid_A = True
+
             conn.send(pkt.to_json().encode())
+            print(f"A → B  SEQ={seq} LEN={length} RWND={rwnd}")
 
-            print(f"A → B : SEQ={seq_a} LEN={length} RWND={rwnd_a}")
+            gm.switch_turn()
 
-            raw = conn.recv(1024).decode()
+            raw = safe_recv(conn)
+            if raw is None:
+                continue
 
             if raw == "ERROR":
-                print("❌ A: B hatalı paket dedi.")
+                print("❌ A HATALI → B +1")
+                gm.add_error_point("B")
+                validator.reset_sender("A")
                 my_turn = False
                 continue
 
-            ack = Packet.from_json(raw)
-
-            ok, reason = validator.validate(ack)
-            if not ok:
-                print(f"❌ ERROR: {reason}")
+            try:
+                ack_pkt = Packet.from_json(raw)
+            except:
+                print("JSON HATASI → A +1")
+                gm.add_error_point("A")
+                conn.send("ERROR".encode())
+                validator.reset_sender("B")
                 continue
 
-            print(f"B → A : ACK={ack.ack} RWND={ack.rwnd}")
+            if ack_pkt.rwnd == 0:
+                gm.notify_rwnd_zero()
 
-            seq_a += length
-            ack_a = ack.ack
+            ok, reason = validator.validate(ack_pkt, sender="B")
+            if not ok:
+                print("ACK hatalı:", reason)
+                conn.send("ERROR".encode())
+                gm.add_error_point("A")
+                validator.reset_sender("B")
+            else:
+                if gm.pending_invalid_A:
+                    gm.add_missed_error_point("A")
+                    gm.pending_invalid_A = False
+
+                print(f"B → A ACK={ack_pkt.ack} RWND={ack_pkt.rwnd}")
+                seq += length
+                ack = ack_pkt.ack
 
             my_turn = False
             continue
 
-        # -------------------- B veri gönderiyor --------------------
+        # ---------------------------------------
+        # B → A GELİYOR
+        # ---------------------------------------
         else:
 
-            raw = conn.recv(1024).decode()
-            incoming = Packet.from_json(raw)
+            raw = safe_recv(conn)
+            if raw is None:
+                continue
 
-            ok, reason = validator.validate(incoming)
-            if not ok:
-                print(f"❌ ERROR: {reason}")
+            try:
+                incoming = Packet.from_json(raw)
+            except:
+                print("B JSON HATASI → A +1")
+                gm.add_error_point("A")
                 conn.send("ERROR".encode())
+                validator.reset_sender("B")
+                continue
+
+            if incoming.rwnd == 0:
+                gm.notify_rwnd_zero()
+
+            ok, reason = validator.validate(incoming, sender="B")
+            if not ok:
+                print("B hatalı:", reason)
+                conn.send("ERROR".encode())
+                gm.add_error_point("A")
+                validator.reset_sender("B")
+                gm.switch_turn()
                 my_turn = True
                 continue
 
-            print(f"B → A : SEQ={incoming.seq} LEN={incoming.length} RWND={incoming.rwnd}")
+            print(f"B → A SEQ={incoming.seq} LEN={incoming.length} RWND={incoming.rwnd}")
 
-            # FLOW CONTROL
-            rwnd_a -= incoming.length
-            if rwnd_a < 0:
-                rwnd_a = 0
+            # FLOW CONTROL ↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓↓
+            rwnd -= incoming.length
+            if rwnd < 0:
+                rwnd = 0
 
             recv_count += 1
-            if recv_count == RWND_INC_EVERY:
-                rwnd_a = min(RWND_MAX, rwnd_a + RWND_INC_AMOUNT)
+            if recv_count == 4:
+                rwnd = min(1000, rwnd + 50)
                 recv_count = 0
+            # FLOW CONTROL ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
             ack_pkt = Packet(
-                seq=seq_a,
+                seq=seq,
                 ack=incoming.seq + incoming.length,
-                rwnd=rwnd_a,
+                rwnd=rwnd,
                 length=0
             )
             conn.send(ack_pkt.to_json().encode())
+            print(f"A → B ACK={ack_pkt.ack} RWND={rwnd}")
 
-            print(f"A → B : ACK={incoming.seq + incoming.length} RWND={rwnd_a}\n")
+            if gm.pending_invalid_B:
+                gm.add_missed_error_point("B")
+                gm.pending_invalid_B = False
 
-            ack_a = incoming.seq + incoming.length
+            gm.switch_turn()
             my_turn = True
+
+    print("GAME OVER → A:", gm.score_A, " B:", gm.score_B)
 
 
 if __name__ == "__main__":
