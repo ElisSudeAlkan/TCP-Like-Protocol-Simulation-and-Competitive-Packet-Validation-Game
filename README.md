@@ -15,24 +15,6 @@ Hata Enjeksiyonu (Blöf Modu): Oyuncular kasıtlı olarak hatalı paketler (Örn
 
 Puanlama Sistemi: Hataları yakalayan veya karşı tarafa hatalı paket yutturan puan kazanır.
 
-📂 Proje Yapısı
-
-tcp_game/
-│
-├── clients/              # İstemci Kodları
-│   ├── __init__.py
-│   ├── client_a.py       # Client A (Sunucu/Dinleyen taraf)
-│   ├── client_b.py       # Client B (Bağlanan taraf)
-│
-├── core/                 # Çekirdek Protokol Mantığı
-│   ├── __init__.py
-│   ├── packet.py         # Paket sınıfı (JSON dönüştürme işlemleri)
-│   ├── validator.py      # Gelen paketleri denetleyen mantık (SEQ, ACK, RWND kontrolü)
-│   ├── game_logic.py     # Skor takibi, zaman aşımı (timeout) ve sıra yönetimi
-│   └── gbn.py            # (Şablon) Go-Back-N ARQ Mantığı (Takım arkadaşları dolduracak)
-│
-└── README.md             # Proje Dokümantasyonu
-
 
 🚀 Nasıl Çalıştırılır?
 Simülasyonu başlatmak için iki ayrı terminal penceresi açmanız gerekir.
